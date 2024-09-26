@@ -88,6 +88,7 @@ func (a *Agent) SetBundle(name string) error {
 
 	// generate bundle from tarball file
 	a.bundleLoader = rego.ParsedBundle("cw", &b)
+	a.Logger.Info("parsed bundle successfully")
 	a.Logger.Info("unlocking requests")
 	a.mutex.Unlock()
 
