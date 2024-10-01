@@ -16,9 +16,10 @@ import (
 )
 
 func TestAgent_Eval(t *testing.T) {
-	// Start a local NATS server
+	// Start a local NATS server with JetStream enabled
 	opts := &server.Options{
-		Port: -1, // Random available port
+		Port:      -1, // Random available port
+		JetStream: true,
 	}
 	natsServer := test.RunServer(opts)
 	defer natsServer.Shutdown()
@@ -51,22 +52,23 @@ func TestAgent_Eval(t *testing.T) {
 
 	// Prepare a sample policy
 	samplePolicy := `
-	package example
+    package example
 
-	default allow = false
+    default allow = false
 
-	allow {
-		input.user == "admin"
-	}
-	`
+    allow {
+        input.user == "admin"
+    }
+    `
 
 	// Parse the module
 	module, err := ast.ParseModule("example.rego", samplePolicy)
 	require.NoError(t, err)
 
-	// Create a bundle
+	// Create a bundle with an empty data object
 	bundleName := "test-bundle"
 	b := &bundle.Bundle{
+		Data: map[string]interface{}{}, // Include an empty data object
 		Modules: []bundle.ModuleFile{
 			{
 				URL:    "example.rego",
