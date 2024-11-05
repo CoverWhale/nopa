@@ -72,13 +72,11 @@ func main() {
 	}
 
 	agent = nopa.NewAgent(nopa.AgentOpts{
-		Env:    env,
-		Object: obj,
-		Logger: logger,
+		BundleName:  "bundles.tar.gz",
+		Env:         env,
+		ObjectStore: obj,
+		Logger:      logger,
 	})
-	agent.SetRuntime()
-
-	agent.SetBundle("bundle.tar.gz")
 
 	config := micro.Config{
 		Name:        "nopatest",
@@ -93,6 +91,8 @@ func main() {
 
 	svc.AddEndpoint("test", micro.HandlerFunc(HandleRequest), micro.WithEndpointSubject("test"))
 	logger.Info("started service")
+
+	go agent.WatchBundleUpdates()
 
 	sigTerm := make(chan os.Signal, 1)
 	signal.Notify(sigTerm, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)

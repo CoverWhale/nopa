@@ -24,7 +24,10 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/open-policy-agent/opa/ast"
 	"github.com/open-policy-agent/opa/bundle"
+	"github.com/open-policy-agent/opa/metrics"
 	"github.com/open-policy-agent/opa/rego"
+	"github.com/open-policy-agent/opa/storage"
+	"github.com/open-policy-agent/opa/storage/inmem"
 )
 
 var (
@@ -32,25 +35,31 @@ var (
 )
 
 type Agent struct {
-	Store        nats.ObjectStore
-	mutex        sync.RWMutex
-	Logger       *logr.Logger
-	Env          map[string]string
-	astFunc      func(*rego.Rego)
-	bundleLoader func(*rego.Rego)
+	BundleName  string
+	ObjectStore nats.ObjectStore
+	OPAStore    storage.Store
+	mutex       sync.RWMutex
+	Logger      *logr.Logger
+	Env         map[string]string
+	astFunc     func(*rego.Rego)
+	Compiler    *ast.Compiler
 }
 
 type AgentOpts struct {
-	Store  nats.ObjectStore
-	Logger *logr.Logger
-	Env    map[string]string
+	BundleName  string
+	ObjectStore nats.ObjectStore
+	Logger      *logr.Logger
+	Env         map[string]string
 }
 
 func NewAgent(opts AgentOpts) *Agent {
 	a := &Agent{
-		Store:  opts.Store,
-		Logger: opts.Logger,
-		Env:    opts.Env,
+		BundleName:  opts.BundleName,
+		ObjectStore: opts.ObjectStore,
+		Logger:      opts.Logger,
+		Env:         opts.Env,
+		OPAStore:    inmem.New(),
+		Compiler:    ast.NewCompiler(),
 	}
 	if opts.Env != nil {
 		a.SetRuntime()
@@ -69,15 +78,19 @@ func (a *Agent) SetRuntime() {
 	a.astFunc = rego.Runtime(obj.Get(ast.StringTerm("env")))
 }
 
+// SetBundle updates the in-memory store with the bundle retrieved from the NATS object store
 func (a *Agent) SetBundle(name string) error {
+	ctx := context.Background()
 	a.Logger.Info("locking requests to update bundle")
 	a.mutex.Lock()
+	a.Logger.Info("locked successfully")
 
 	// get bundle from NATS object bucket
-	f, err := a.Store.Get(name)
+	f, err := a.ObjectStore.Get(name)
 	if err != nil {
 		return fmt.Errorf("error getting object %v", err)
 	}
+	a.Logger.Info("retrieved bundle from object store")
 
 	// build new reader from tarball retrieved over NATS
 	tarball := bundle.NewCustomReader(bundle.NewTarballLoaderWithBaseURL(f, ""))
@@ -85,18 +98,22 @@ func (a *Agent) SetBundle(name string) error {
 	if err != nil {
 		return fmt.Errorf("error reading bundle: %v", err)
 	}
+	a.Logger.Info("generated tarball from bundle successfully")
 
-	// generate bundle from tarball file
-	a.bundleLoader = rego.ParsedBundle("cw", &b)
-	a.Logger.Info("parsed bundle successfully")
+	if err := a.Activate(ctx, b); err != nil {
+		return err
+	}
+
+	a.Logger.Info("activated bundle successfully")
 	a.Logger.Info("unlocking requests")
 	a.mutex.Unlock()
+	a.Logger.Info("unlocked successfully")
 
 	return nil
 }
 
-func (a *Agent) WatchBundleUpdates(name string) {
-	watcher, err := a.Store.Watch(nats.IgnoreDeletes())
+func (a *Agent) WatchBundleUpdates() {
+	watcher, err := a.ObjectStore.Watch(nats.IgnoreDeletes())
 	if err != nil {
 		a.Logger.Error(err)
 	}
@@ -106,7 +123,7 @@ func (a *Agent) WatchBundleUpdates(name string) {
 			continue
 		}
 
-		if v.Name != name {
+		if v.Name != a.BundleName {
 			continue
 		}
 
@@ -114,11 +131,8 @@ func (a *Agent) WatchBundleUpdates(name string) {
 	}
 }
 
+// Eval evaluates the input against the policy package
 func (a *Agent) Eval(ctx context.Context, input []byte, pkg string) ([]byte, error) {
-	if a.bundleLoader == nil {
-		return nil, fmt.Errorf("bundle not loaded")
-	}
-
 	if input == nil {
 		return nil, fmt.Errorf("input required")
 	}
@@ -127,24 +141,43 @@ func (a *Agent) Eval(ctx context.Context, input []byte, pkg string) ([]byte, err
 		return nil, fmt.Errorf("package name required")
 	}
 
-	var data map[string]interface{}
-
-	if err := json.Unmarshal(input, &data); err != nil {
+	a.Logger.Info("parsing input")
+	data, _, err := readInputGetV1(input)
+	if err != nil {
+		a.Logger.Error(err)
 		return nil, err
 	}
 
 	a.mutex.RLock()
-	r, err := rego.New(
-		rego.Query(fmt.Sprintf("x = %s", pkg)),
-		a.astFunc,
-		a.bundleLoader,
-	).PrepareForEval(ctx)
+	c := storage.NewContext()
+	txn, err := a.OPAStore.NewTransaction(ctx, storage.TransactionParams{Context: c})
 	if err != nil {
+		a.Logger.Error(err)
+		return nil, err
+	}
+	defer a.OPAStore.Abort(ctx, txn)
+
+	r := rego.New(
+		rego.Compiler(a.Compiler),
+		rego.Query(pkg),
+		rego.Transaction(txn),
+		rego.Store(a.OPAStore),
+		rego.ParsedInput(data),
+		a.astFunc,
+	)
+
+	prepared, err := r.PrepareForEval(ctx)
+	if err != nil {
+		a.Logger.Error(err)
 		return nil, err
 	}
 
-	results, err := r.Eval(ctx, rego.EvalInput(data))
+	results, err := prepared.Eval(ctx,
+		rego.EvalParsedInput(data),
+		rego.EvalTransaction(txn),
+	)
 	if err != nil {
+		a.Logger.Error(err)
 		return nil, err
 	}
 
@@ -153,6 +186,42 @@ func (a *Agent) Eval(ctx context.Context, input []byte, pkg string) ([]byte, err
 	}
 
 	a.mutex.RUnlock()
-	return json.Marshal(results[0].Bindings["x"])
+	return json.Marshal(results[0].Expressions[0].Value)
 
+}
+
+func (a *Agent) Activate(ctx context.Context, b bundle.Bundle) error {
+	bundles := map[string]*bundle.Bundle{
+		"nopa": &b,
+	}
+	c := storage.NewContext()
+	txn, err := a.OPAStore.NewTransaction(ctx, storage.TransactionParams{Context: c, Write: true})
+	if err != nil {
+		return err
+	}
+	opts := bundle.ActivateOpts{
+		Ctx:      ctx,
+		Store:    a.OPAStore,
+		Bundles:  bundles,
+		Txn:      txn,
+		TxnCtx:   c,
+		Compiler: a.Compiler,
+		Metrics:  metrics.New(),
+	}
+
+	if err := bundle.Activate(&opts); err != nil {
+		a.Logger.Error(err)
+		return err
+	}
+
+	return a.OPAStore.Commit(ctx, txn)
+}
+
+func readInputGetV1(data []byte) (ast.Value, *interface{}, error) {
+	var input interface{}
+	if err := json.Unmarshal(data, &input); err != nil {
+		return nil, nil, fmt.Errorf("invalid input: %w", err)
+	}
+	v, err := ast.InterfaceToValue(input)
+	return v, &input, err
 }
