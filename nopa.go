@@ -103,8 +103,8 @@ func (a *Agent) SetBundle(name string) error {
 	if err := a.Activate(ctx, b); err != nil {
 		return err
 	}
-
 	a.Logger.Info("activated bundle successfully")
+
 	a.Logger.Info("unlocking requests")
 	a.mutex.Unlock()
 	a.Logger.Info("unlocked successfully")
@@ -141,7 +141,8 @@ func (a *Agent) Eval(ctx context.Context, input []byte, pkg string) ([]byte, err
 		return nil, fmt.Errorf("package name required")
 	}
 
-	a.Logger.Info("parsing input")
+	a.Logger.Infof("evaluating package: %s", pkg)
+	a.Logger.Debugf("parsing input: %v", string(input))
 	data, _, err := readInputGetV1(input)
 	if err != nil {
 		a.Logger.Error(err)
@@ -186,8 +187,14 @@ func (a *Agent) Eval(ctx context.Context, input []byte, pkg string) ([]byte, err
 	}
 
 	a.mutex.RUnlock()
-	return json.Marshal(results[0].Expressions[0].Value)
+	value, err := json.Marshal(results[0].Expressions[0].Value)
+	if err != nil {
+		return nil, err
+	}
 
+	a.Logger.Debugf("response: %s", string(value))
+
+	return value, nil
 }
 
 func (a *Agent) Activate(ctx context.Context, b bundle.Bundle) error {
