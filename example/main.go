@@ -72,7 +72,7 @@ func main() {
 	}
 
 	agent = nopa.NewAgent(nopa.AgentOpts{
-		BundleName:  "bundles.tar.gz",
+		BundleName:  "bundle.tar.gz",
 		Env:         env,
 		ObjectStore: obj,
 		Logger:      logger,
