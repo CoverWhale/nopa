@@ -34,37 +34,39 @@ var (
 	ErrNotFound error = fmt.Errorf("package not found")
 )
 
-type BundleWrapperFunc func(b bundle.Bundle) (bundle.Bundle, error)
+// BundleModifyFunc will take a bundle and allow for modifications
+// like adding custom modules
+type BundleModifyFunc func(b bundle.Bundle) (bundle.Bundle, error)
 
 type Agent struct {
-	BundleName    string
-	ObjectStore   nats.ObjectStore
-	OPAStore      storage.Store
-	mutex         sync.RWMutex
-	Logger        *logr.Logger
-	Env           map[string]string
-	astFunc       func(*rego.Rego)
-	Compiler      *ast.Compiler
-	BundleWrapper BundleWrapperFunc
+	BundleName  string
+	ObjectStore nats.ObjectStore
+	OPAStore    storage.Store
+	mutex       sync.RWMutex
+	Logger      *logr.Logger
+	Env         map[string]string
+	astFunc     func(*rego.Rego)
+	Compiler    *ast.Compiler
+	Modifiers   []BundleModifyFunc
 }
 
 type AgentOpts struct {
-	BundleName    string
-	ObjectStore   nats.ObjectStore
-	Logger        *logr.Logger
-	Env           map[string]string
-	BundleWrapper BundleWrapperFunc
+	BundleName  string
+	ObjectStore nats.ObjectStore
+	Logger      *logr.Logger
+	Env         map[string]string
+	Modifiers   []BundleModifyFunc
 }
 
 func NewAgent(opts AgentOpts) *Agent {
 	a := &Agent{
-		BundleName:    opts.BundleName,
-		ObjectStore:   opts.ObjectStore,
-		Logger:        opts.Logger,
-		Env:           opts.Env,
-		OPAStore:      inmem.New(),
-		Compiler:      ast.NewCompiler(),
-		BundleWrapper: opts.BundleWrapper,
+		BundleName:  opts.BundleName,
+		ObjectStore: opts.ObjectStore,
+		Logger:      opts.Logger,
+		Env:         opts.Env,
+		OPAStore:    inmem.New(),
+		Compiler:    ast.NewCompiler(),
+		Modifiers:   opts.Modifiers,
 	}
 	if opts.Env != nil {
 		a.SetRuntime()
@@ -114,11 +116,11 @@ func (a *Agent) SetBundle(name string) error {
 	}
 	a.Logger.Info("generated tarball from bundle successfully")
 
-	if a.BundleWrapper != nil {
-		a.Logger.Info("bundle wrapper defined, calling wrapper")
-		b, err = a.BundleWrapper(b)
+	for _, v := range a.Modifiers {
+		a.Logger.Debug("modifying bundle")
+		b, err = v(b)
 		if err != nil {
-			return fmt.Errorf("error in bundle wrapper: %w", err)
+			return fmt.Errorf("error in bundle modifier: %w", err)
 		}
 	}
 
