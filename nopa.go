@@ -156,7 +156,6 @@ func (a *Agent) Eval(ctx context.Context, input []byte, pkg string) ([]byte, err
 		a.Logger.Error(err)
 		return nil, err
 	}
-	defer a.OPAStore.Abort(ctx, txn)
 
 	r := rego.New(
 		rego.Compiler(a.Compiler),
@@ -170,6 +169,7 @@ func (a *Agent) Eval(ctx context.Context, input []byte, pkg string) ([]byte, err
 	prepared, err := r.PrepareForEval(ctx)
 	if err != nil {
 		a.Logger.Error(err)
+		a.OPAStore.Abort(ctx, txn)
 		return nil, err
 	}
 
@@ -179,6 +179,7 @@ func (a *Agent) Eval(ctx context.Context, input []byte, pkg string) ([]byte, err
 	)
 	if err != nil {
 		a.Logger.Error(err)
+		a.OPAStore.Abort(ctx, txn)
 		return nil, err
 	}
 
@@ -218,6 +219,7 @@ func (a *Agent) Activate(ctx context.Context, b bundle.Bundle) error {
 
 	if err := bundle.Activate(&opts); err != nil {
 		a.Logger.Error(err)
+		a.OPAStore.Abort(ctx, txn)
 		return err
 	}
 
