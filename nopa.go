@@ -82,8 +82,17 @@ func (a *Agent) SetRuntime() {
 func (a *Agent) SetBundle(name string) error {
 	ctx := context.Background()
 	a.Logger.Info("locking requests to update bundle")
-	a.mutex.Lock()
+	ok := a.mutex.TryLock()
+	if !ok {
+		a.mutex.Unlock()
+		a.mutex.Lock()
+	}
 	a.Logger.Info("locked successfully")
+	defer func() {
+		a.Logger.Info("unlocking requests")
+		a.mutex.Unlock()
+		a.Logger.Info("unlocked successfully")
+	}()
 
 	// get bundle from NATS object bucket
 	f, err := a.ObjectStore.Get(name)
@@ -104,10 +113,6 @@ func (a *Agent) SetBundle(name string) error {
 		return err
 	}
 	a.Logger.Info("activated bundle successfully")
-
-	a.Logger.Info("unlocking requests")
-	a.mutex.Unlock()
-	a.Logger.Info("unlocked successfully")
 
 	return nil
 }
