@@ -34,32 +34,37 @@ var (
 	ErrNotFound error = fmt.Errorf("package not found")
 )
 
+type BundleWrapperFunc func(b bundle.Bundle) (bundle.Bundle, error)
+
 type Agent struct {
-	BundleName  string
-	ObjectStore nats.ObjectStore
-	OPAStore    storage.Store
-	mutex       sync.RWMutex
-	Logger      *logr.Logger
-	Env         map[string]string
-	astFunc     func(*rego.Rego)
-	Compiler    *ast.Compiler
+	BundleName    string
+	ObjectStore   nats.ObjectStore
+	OPAStore      storage.Store
+	mutex         sync.RWMutex
+	Logger        *logr.Logger
+	Env           map[string]string
+	astFunc       func(*rego.Rego)
+	Compiler      *ast.Compiler
+	BundleWrapper BundleWrapperFunc
 }
 
 type AgentOpts struct {
-	BundleName  string
-	ObjectStore nats.ObjectStore
-	Logger      *logr.Logger
-	Env         map[string]string
+	BundleName    string
+	ObjectStore   nats.ObjectStore
+	Logger        *logr.Logger
+	Env           map[string]string
+	BundleWrapper BundleWrapperFunc
 }
 
 func NewAgent(opts AgentOpts) *Agent {
 	a := &Agent{
-		BundleName:  opts.BundleName,
-		ObjectStore: opts.ObjectStore,
-		Logger:      opts.Logger,
-		Env:         opts.Env,
-		OPAStore:    inmem.New(),
-		Compiler:    ast.NewCompiler(),
+		BundleName:    opts.BundleName,
+		ObjectStore:   opts.ObjectStore,
+		Logger:        opts.Logger,
+		Env:           opts.Env,
+		OPAStore:      inmem.New(),
+		Compiler:      ast.NewCompiler(),
+		BundleWrapper: opts.BundleWrapper,
 	}
 	if opts.Env != nil {
 		a.SetRuntime()
@@ -109,6 +114,14 @@ func (a *Agent) SetBundle(name string) error {
 	}
 	a.Logger.Info("generated tarball from bundle successfully")
 
+	if a.BundleWrapper != nil {
+		a.Logger.Info("bundle wrapper defined, calling wrapper")
+		b, err = a.BundleWrapper(b)
+		if err != nil {
+			return fmt.Errorf("error in bundle wrapper: %w", err)
+		}
+	}
+
 	if err := a.Activate(ctx, b); err != nil {
 		return err
 	}
@@ -132,7 +145,9 @@ func (a *Agent) WatchBundleUpdates() {
 			continue
 		}
 
-		a.SetBundle(v.Name)
+		if err := a.SetBundle(v.Name); err != nil {
+			a.Logger.Errorf("error setting bundle: %w", err)
+		}
 	}
 }
 
