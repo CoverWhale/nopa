@@ -34,6 +34,10 @@ var (
 	ErrNotFound error = fmt.Errorf("package not found")
 )
 
+// BundleModifyFunc will take a bundle and allow for modifications
+// like adding custom modules
+type BundleModifyFunc func(b bundle.Bundle) (bundle.Bundle, error)
+
 type Agent struct {
 	BundleName  string
 	ObjectStore nats.ObjectStore
@@ -43,6 +47,7 @@ type Agent struct {
 	Env         map[string]string
 	astFunc     func(*rego.Rego)
 	Compiler    *ast.Compiler
+	Modifiers   []BundleModifyFunc
 }
 
 type AgentOpts struct {
@@ -50,6 +55,7 @@ type AgentOpts struct {
 	ObjectStore nats.ObjectStore
 	Logger      *logr.Logger
 	Env         map[string]string
+	Modifiers   []BundleModifyFunc
 }
 
 func NewAgent(opts AgentOpts) *Agent {
@@ -60,6 +66,7 @@ func NewAgent(opts AgentOpts) *Agent {
 		Env:         opts.Env,
 		OPAStore:    inmem.New(),
 		Compiler:    ast.NewCompiler(),
+		Modifiers:   opts.Modifiers,
 	}
 	if opts.Env != nil {
 		a.SetRuntime()
@@ -82,8 +89,17 @@ func (a *Agent) SetRuntime() {
 func (a *Agent) SetBundle(name string) error {
 	ctx := context.Background()
 	a.Logger.Info("locking requests to update bundle")
-	a.mutex.Lock()
+	ok := a.mutex.TryLock()
+	if !ok {
+		a.mutex.Unlock()
+		a.mutex.Lock()
+	}
 	a.Logger.Info("locked successfully")
+	defer func() {
+		a.Logger.Info("unlocking requests")
+		a.mutex.Unlock()
+		a.Logger.Info("unlocked successfully")
+	}()
 
 	// get bundle from NATS object bucket
 	f, err := a.ObjectStore.Get(name)
@@ -100,14 +116,18 @@ func (a *Agent) SetBundle(name string) error {
 	}
 	a.Logger.Info("generated tarball from bundle successfully")
 
+	for _, v := range a.Modifiers {
+		a.Logger.Debug("modifying bundle")
+		b, err = v(b)
+		if err != nil {
+			return fmt.Errorf("error in bundle modifier: %w", err)
+		}
+	}
+
 	if err := a.Activate(ctx, b); err != nil {
 		return err
 	}
 	a.Logger.Info("activated bundle successfully")
-
-	a.Logger.Info("unlocking requests")
-	a.mutex.Unlock()
-	a.Logger.Info("unlocked successfully")
 
 	return nil
 }
@@ -127,7 +147,9 @@ func (a *Agent) WatchBundleUpdates() {
 			continue
 		}
 
-		a.SetBundle(v.Name)
+		if err := a.SetBundle(v.Name); err != nil {
+			a.Logger.Errorf("error setting bundle: %w", err)
+		}
 	}
 }
 
@@ -218,6 +240,7 @@ func (a *Agent) Activate(ctx context.Context, b bundle.Bundle) error {
 
 	if err := bundle.Activate(&opts); err != nil {
 		a.Logger.Error(err)
+		a.OPAStore.Abort(ctx, txn)
 		return err
 	}
 
