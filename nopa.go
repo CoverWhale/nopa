@@ -28,6 +28,7 @@ import (
 	"github.com/open-policy-agent/opa/rego"
 	"github.com/open-policy-agent/opa/storage"
 	"github.com/open-policy-agent/opa/storage/inmem"
+	"github.com/open-policy-agent/opa/topdown/cache"
 )
 
 var (
@@ -48,6 +49,7 @@ type Agent struct {
 	astFunc     func(*rego.Rego)
 	Compiler    *ast.Compiler
 	Modifiers   []BundleModifyFunc
+	Cache       cache.InterQueryCache
 }
 
 type AgentOpts struct {
@@ -59,6 +61,8 @@ type AgentOpts struct {
 }
 
 func NewAgent(opts AgentOpts) *Agent {
+	config, _ := cache.ParseCachingConfig(nil)
+	interQueryCache := cache.NewInterQueryCache(config)
 	a := &Agent{
 		BundleName:  opts.BundleName,
 		ObjectStore: opts.ObjectStore,
@@ -67,6 +71,7 @@ func NewAgent(opts AgentOpts) *Agent {
 		OPAStore:    inmem.New(),
 		Compiler:    ast.NewCompiler(),
 		Modifiers:   opts.Modifiers,
+		Cache:       cache.InterQueryCache(interQueryCache),
 	}
 	if opts.Env != nil {
 		a.SetRuntime()
@@ -186,6 +191,7 @@ func (a *Agent) Eval(ctx context.Context, input []byte, pkg string) ([]byte, err
 		rego.Transaction(txn),
 		rego.Store(a.OPAStore),
 		rego.ParsedInput(data),
+		rego.InterQueryBuiltinCache(a.Cache),
 		a.astFunc,
 	)
 
@@ -198,6 +204,7 @@ func (a *Agent) Eval(ctx context.Context, input []byte, pkg string) ([]byte, err
 	results, err := prepared.Eval(ctx,
 		rego.EvalParsedInput(data),
 		rego.EvalTransaction(txn),
+		rego.EvalInterQueryBuiltinCache(a.Cache),
 	)
 	if err != nil {
 		a.Logger.Error(err)
