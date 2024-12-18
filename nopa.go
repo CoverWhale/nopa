@@ -137,7 +137,7 @@ func (a *Agent) SetBundle(name string) error {
 	return nil
 }
 
-func (a *Agent) WatchBundleUpdates() {
+func (a *Agent) WatchBundleUpdates(errChan chan<- error) {
 	watcher, err := a.ObjectStore.Watch(nats.IgnoreDeletes())
 	if err != nil {
 		a.Logger.Error(err)
@@ -153,7 +153,30 @@ func (a *Agent) WatchBundleUpdates() {
 		}
 
 		if err := a.SetBundle(v.Name); err != nil {
-			a.Logger.Errorf("error setting bundle: %w", err)
+			err = fmt.Errorf("error setting bundle: %w", err)
+			a.Logger.Error(err)
+			errChan <- err
+		}
+	}
+}
+
+func (a *Agent) MustWatchBundleUpdates() {
+	watcher, err := a.ObjectStore.Watch(nats.IgnoreDeletes())
+	if err != nil {
+		a.Logger.Error(err)
+	}
+
+	for v := range watcher.Updates() {
+		if v == nil {
+			continue
+		}
+
+		if v.Name != a.BundleName {
+			continue
+		}
+
+		if err := a.SetBundle(v.Name); err != nil {
+			a.Logger.Panicf("error setting bundle: %v", err)
 		}
 	}
 }
