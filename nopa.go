@@ -73,9 +73,7 @@ func NewAgent(opts AgentOpts) *Agent {
 		Modifiers:   opts.Modifiers,
 		Cache:       cache.InterQueryCache(interQueryCache),
 	}
-	if opts.Env != nil {
-		a.SetRuntime()
-	}
+	a.SetRuntime()
 
 	return a
 }
